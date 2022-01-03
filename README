@@ -1,0 +1,324 @@
+------------ PROTOCOALE DE COMUNICATIE ------------
+--- Tema 2 - Aplicatie client-server UDP si TCP ---
+
+     _ __      _,.----.   
+  .-`.' ,`.  .' .' -   \  
+ /==/, -   \/==/  ,  ,-'  
+|==| _ .=. ||==|-   |  .  
+|==| , '=',||==|_   `-' \ 
+|==|-  '..' |==|   _  , | 
+|==|,  |    \==\.       / 
+/==/ - |     `-.`.___.-'  
+`--`---'                  
+
+Cuprins:
+	1. Biblioteci si macro-uri de baza......Linia  31
+	2. Macro-uri comutative.................Linia  84
+	3. Modularizare.........................Linia 125
+		3.1. Fisierele "helpers.*"..........Linia 128
+		3.2. Fisierele "structures.*".......Linia 136
+		3.3. Fisierele "client.*"...........Linia 161
+		3.4. Fisierele "topic.*"............Linia 213
+		3.5. Fisierul "subscriber.c"........Linia 245
+		3.6. Fisierul "server.c"............Linia 264
+	4. Alte detalii.........................Linia 325
+
+
+--- ---------------------------------- ---
+--- 1. Biblioteci si macro-uri de baza ---
+--- ---------------------------------- ---
+
+	In fisierul 'helpers.h' sunt incluse toate bibliotecile folosite in program
+
+	Sunt prezente biblioteci standard de lucru cu IO, string-uri, memorie
+	(malloc, calloc, free), de lucru aritmetic (math.h) si pentru lucrul cu
+	sockets si structuri aferente (din sys/, netinet/, arpa/ etc.)
+
+
+	Sunt prezente macro-uri folosite in implementare:
+	MAX_CLIENTS - parametru pentru 'listen' ce defineste numarul maxim de
+		clienti in asteptare
+
+	SOCKADDR_SIZE - un macro mai rapid pentru marimea unei structuri de tipul
+		'sockaddr' (se foloseste des)
+
+	BUFLEN - o valoare maxima pentru un string folosit la actiuni mici
+
+	COMMAND_LEN - lungimea maxima a unei comenzi (de la subscriber)
+
+	ID_LEN - lungimea maxima a ID-ului unui client
+
+	TOPIC_LEN - lungimea maxima a unui topic
+
+	PAYLOAD_LEN - lungimea maxima a unui payload primit de la un client UDP
+
+	UDP_LEN - lungimea maxima a unui mesaj primit de la un client UDP
+		(topic - 50 caractere, byte-ul de tipul de data - 1 caracter,
+		payload - 1500 de caractere)
+
+	TYPE_LEN - lungimea maxima a string-ului "type" din mesajul ce trebuie
+		afisat de catre subscriber (lungimea lui: "SHORT_REAL")
+
+	MESS_LEN - lungimea maxima a unui mesaj parsat dintr-un mesaj de la un
+		client UDP; calculele aferente sunt prezentate in 'helpers.h' imediat
+		langa acesta
+
+	TRUE si FALSE - simple define-uri ce ajuta la o mai buna intelegere a
+		codului in momentul in care vrem sa lucram cu valori boolene
+
+	DIE - Un macro ce testeaza o conditie si un mesaj de eroare si afiseaza
+		acel mesaj si iese din program daca este indeplinita conditia
+
+	DIED - Similar lui DIE, doar ca NU iese din program si seteaza o variabila
+		'DIED_RESULT' ce informeaza daca a avut loc sau nu eroarea
+
+	GOOD - Daca LOG este setat (Sectiunea 2. Macro-uri comutative), se
+		afiseaza un mesaj la STDOUT cu rol de logging. (Independent de
+		logging-ul necesar cerintei, care este mereu afisat)
+
+
+--- ------------------------ ---
+--- 2. Macro-uri comutative ---
+--- ------------------------ ---
+	
+	In fisierul 'helpers.h' sunt prezente define-uri ce modifica usor
+	functionalitatea programului:
+
+	USE_NEAGLE - DEFAULT FALSE - In cazul in care nu se doreste folosirea
+		algoritmului lui Neagle, acesta se dezactiveaza cand este cazul
+		(pentru valoarea FALSE a macro-ului)
+
+	LOG - DEFAULT FALSE - Orice mesaj format prin macro-ul GOOD este afisat
+		doar daca acest macro este setat la TRUE. Ca orice proces de logging,
+		ajuta la intelegerea programului, verificarea lui si, in special,
+		depanarea acestuia
+
+	CHANGEABLE_SUB - DEFAULT TRUE - Am considerat ca este la latitudinea
+		noastra sa decidem comportamentul a doua comenzi imediat consecutive
+		de tip "subscribe", ce au flag-uri SF diferite.
+
+		Daca acest macro este setat la TRUE, daca un client este abonat intr-un
+		fel (normal sau SF) la un topic, si se executa comanda "subscribe" cu
+		SF setat in celalalt fel, se produce dezabonarea acestuia de la topic
+		in modul vechi si are loc abonarea acestuia la acelasi topic, dar cu
+		noul flag SF.
+
+		Daca acest macro este setat la FALSE, comenzile ulterioare de abonare
+		la un topic, indiferent de SF, nu vor avea efect.
+
+		Bineinteles, acestea sunt valabile doar pentru comenzi subscribe
+		IMEDIAT CONSECUTIVE. O succesiune de tipul 'subscribe topic1 SF1' ->
+		'unsubscribe topic1' -> 'subscribe topic1 SF2' nu este cazul pe care
+		acest macro il acopera.
+
+	VALIDATE_COMMANDS - DEFAULT TRUE - Pentru valoarea TRUE a acestui macro,
+		se afiseaza mesaje corespunzatoare de la subscriber in cazul in care
+		acesta trimite comenzi invalide. Comenzile ajung la server DOAR daca
+		acestea sunt valide. Pentru valoarea FALSE, orice comanda poate ajunge
+		la server, compromitandu-l.
+
+
+--- --------------- ---
+--- 3. Modularizare ---
+--- --------------- ---
+
+=== 3.1. Fisierele "helpers.*" ===
+
+	Marea parte a fost discutata in sectiunile anterioare.
+
+	De adaugat, este prezenta o functie simpla max ce returneaza maximul
+	dintre doua numere.
+
+
+=== 3.2. Fisierele "structures.*" ===
+
+	* Sunt prezente doua structuri GENERICE
+	Elem - Un element al unei liste simplu-inlantuite.
+
+	Queue - O coada implementata cu o lista simplu-inlantuita.
+
+	* Sunt prezente functii simple de alocare:
+		new_elem - Un nou Elem
+		new_queue - Un nou Queue
+
+	* Pentru un Queue, sunt prezente functii speciale pentru:
+	Verificare stare:
+		queue_is_empty - TRUE daca un Queue este gol
+
+	Modificare stare:
+		enqueue - Adauga un element la coada
+		dequeue - Returneaza primul element din coada, sau NULL daca aceasta
+			este goala
+
+	Dezalocare:
+		delete_queue - Itereaza prin fiecare element al cozii si aplica free()
+			asupra acestuia
+
+
+=== 3.3. Fisierele "client.*" ===
+
+	* Este prezenta o structura pentru un client. Aceasta identifica un client
+	prin:
+		ID-ul acestuia
+		socket-ul pe care acesta comunica la momentul actual (sau -1 daca
+			este OFFLINE)
+		adresa acestuia (IP, Port etc.)
+
+		Coada de mesaje in asteptare - in cazul in care acesta este abonat
+			in mod SF la unele topicuri, aici se vor strange mesajele pe
+			care le va vedea data viitoare cand se conecteaza
+
+	* Sunt prezente doua liste de clienti:
+	waiting_root - Clienti pentru care inca nu s-a stabilit legatura
+		ID - socket. Se asteapta un mesaj de pe un anumit socket care sa ofere
+		ID-ul
+
+	clients_root - Lista propriu-zisa de clienti care cu care se
+		interactioneaza la un moment dat
+
+	* Sunt prezente functii ce modifica aceste liste:
+	new_client - Aloca un nou client cu detaliile prin care acesta este
+		identificat
+
+	add_client - Adauga un client la capul listei 'clients_root'
+
+	get_client - Cauta un client in urmatorul fel
+		Dupa ID daca socket-ul este -1 (clientul este OFFLINE)
+		Dupa socket daca acesta nu este -1
+
+		In caz de succes, este returnat clientul gasit. In caz contrar, NULL
+
+	extract_client - Similar lui get_client doar ca extrage clientul din lista,
+		acesta nemaifiind inclus in ea
+
+	client_login - Realizeaza operatiile necesare pentru un client in momentul
+		in care acesta se conecteaza (Precum trimiterea de mesaje de la
+		topic-uri SF)
+
+	client_logout - Pur si simplu seteaza socket-ul acestuia la -1, valoare
+		dupa care restul programului se ghideaza pentru a afla conectivitatea
+		acestuia
+
+	delete_client - Aferent structurii de date de tip lista simplu-inlantuita,
+		se itereaza prin fiecare element pornind de la cel cu client-ul primit
+		ca parametru si se sterge
+
+	remove_clients - Apeleaza 'delete_client' asupra radacinii listei de
+		clienti 'clients_root', astfel stergand intreaga lista
+
+
+=== 3.4. Fisierele "topic.*" ===
+
+	* Este prezenta o structura pentru un topic. Acesta se identifica prin:
+		Numele acestuia
+
+		Lista de clienti care sunt abonati in mod normal la acest topic
+		Lista de clienti care sunt abonati in mod SF la acest topic
+
+	* Este prezenta o lista de topic-uri "topics_root", lista simplu-inlantuita
+
+	* Sunt prezente functii ce modifica aceasta lista:
+	new_topic - Aloca un nou topic cu numele dat
+
+	get_topic - Cauta dupa nume un topic. In cazul in care acesta nu este
+		gasit, este creat si introdus in lista
+
+	subscribe - Aboneaza un client la un topic anume, adaugandu-l in lista
+		aferenta modului de abonare. Daca este setat macro-ul CHANGEABLE_SUBS,
+		se verifica daca un client este deja abonat la un topic, in orice fel,
+		si ii schimba modul de abonare la cel nou
+
+	unsubscribe - Dezaboneaza un client de la un topic anume, indiferent de
+		modul lui de abonare la acesta
+
+	delete_topic - Aferent structurii de date de tip lista simplu-inlantuita,
+		se itereaza prin fiecare element pornind de la cel cu topic-ul primit
+		ca parametru si se sterge
+
+	remove_topics - Apeleaza 'delete_topic' asupra radacinii listei de
+		topic-uri 'topics_root', astfel stergand intreaga lista
+
+
+=== 3.5. Fisierul "subscriber.c" ===
+
+	Ruleaza un nou client intr-un mod destul de imperativ:
+
+	- Deschide un nou socket
+	- Dezactiveaza algoritmul lui Neagle daca este necesar
+	- Scrie detaliile adresei server-ului la care urmeaza sa se conecteze
+	- Incearca conectarea la server
+	- Trimite un mesaj ce contine ID-ul acestuia catre server
+	- Incepe asteptarea:
+		- Asteapta un mesaj de la STDIN sau de la server
+		- Daca este de la STDIN, este o comanda
+			- Se verifica validitatea acesteia daca este cazul
+			- Se trimite catre server
+		- Daca este de la server, este un mesaj
+			- Se afiseaza
+		- La intalnirea comenzii "exit" de la STDIN, programul se incheie
+
+
+=== 3.6. Fisierul "server.c" ===
+
+	Din nou, server-ul ruleaza intr-un mod destul de imperativ:
+
+	- Se deschid doua socket-uri, unul pentru TCP si unul pentru UDP
+	- Se leaga aceste socket-uri de port (bind)
+	- Se seteaza socket-ul TCP in modul de 'listen', pentru a astepta
+	conexiuni
+
+	Incepe rularea propriu-zisa a server-ului
+
+	- Se stabilesc sockets-ii de pe care se asteapta mesaje (cel TCP, cel UDP
+	si STDIN)
+	
+	Se asteapta activitate pe un socket
+
+	- Daca socket-ul este cel TCP, un nou client incearca sa se conecteze
+		- Se seteaza un nou socket pentru acesta, iar clientul intra in lista
+		'waiting_root', pentru clienti ce inca nu au o legatura ID - socket
+		- Daca este necesar, se dezactiveaza algoritmul lui Neagle pentru
+		acest socket
+
+	- Daca socket-ul este cel UDP, a fost primit un mesaj aferent
+		- Se parseaza, conform cerintei, mesajul
+		- Se itereaza prin clientii abonati la topic-ul mesajului
+			- Pentru clientii abonati normali, se trimite mesajul parsat doar
+			daca acestia sunt conectati
+			- Pentru clientii abonati SF, se trimite mesajul parsat imediat in
+			cazul in care acestia sunt conectati. Mesajul este stocat in coada
+			lor de mesaje daca sunt deconectati, urmand ca la o ulterioara
+			conectare sa se trimita toate mesajele din coada
+
+	- Daca socket-ul este al unui client, acesta a executat o comanda
+		- Se stabileste validitatea comenzii
+		- Pentru comanda 'connect'
+			- Aceasta transmite ID-ul clientului. Astfel, acum se poate
+			realiza legatura ID - socket a acestuia. Clientul este scos din
+			lista 'waiting_root' si adaugat la 'clients_root'. Totodata,
+			acesta devine CONECTAT.
+			- In cazul in care clientul deja avea legatura ID - socket
+			realizata, acesta doar devine CONECTAT.
+		- Pentru comanda 'subscribe'
+			- Se cauta topic-ul la care se doreste abonarea
+			- Se aboneaza clientul la topic-ul dorit, in modul SF intentionat
+		- Pentru comanda 'unsubscribe'
+			- Se cauta topic-ul la care se doreste dezabonarea
+			- Se realizeaza dezabonarea clientului de la acest topic
+		- Pentru comanda 'exit'
+			- Clientul devine deconectat, socket-ul lui devenind disponibil
+			pentru alte conexiuni. Tot programul stie de aceasta schimbare
+			(in special partea de mesaje de la topic-uri SF)
+
+	- Daca socket-ul este cel de la STDIN
+		- Se verifica daca s-a transmis comanda "exit", caz in care se opreste
+		executia server-ului
+
+	- La finalizarea executiei, se elibereaza memoria folosita si se inchid
+	socket-urile cu care s-a lucrat
+
+
+--- --------------- ---
+--- 4. Alte detalii ---
+--- --------------- ---
+	none
